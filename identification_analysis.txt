@@ -1,0 +1,77 @@
+#!/bin/bash -e
+
+#SBATCH --account       lincoln03750
+#SBATCH --job-name      oomycete_ID
+#SBATCH --time          1-00:00:00
+#SBATCH --mem           5GB
+#SBATCH --cpus-per-task 12
+#SBATCH --error         %x_%A_%a.err
+#SBATCH --output        %x_%A_%a.out
+
+#set working directory
+cd /home/byersa/00_nesi_projects/lincoln03750/oomycete_AGRF/BLASTN
+
+#Reformat headers 
+awk '
+  /^>/ {
+    split($0, a, " ");
+    acc = substr(a[1], 2);             # accession
+    genus = a[2];                      # genus
+    species = a[3];                    # species
+    gsub(/[^A-Za-z0-9_]/, "_", genus);
+    gsub(/[^A-Za-z0-9_]/, "_", species);
+    print ">" acc "|" genus "_" species;
+    next
+  }
+  { print }
+' MAFFT_input_files/selected_sequences.fasta > MAFFT_input_files/selected_sequences_clean.fasta
+
+#Wrap sequences to 60 bp per line
+#module load seqtk/1.4-GCC-11.3.0
+#seqtk seq -l 60 MAFFT_input_files/selected_sequences_clean.fasta > MAFFT_input_files/selected_sequences_wrapped.fasta
+#seqtk seq -l 60 MAFFT_input_files/otus_97_oomycetes_ITS1.fasta > MAFFT_input_files/OTUs_wrapped.fasta
+
+#Step 1. Extract ITS1 region from reference and query fastas
+mkdir MAFFT_input_files/ITSx_outputs
+conda activate itsx_env
+ITSx -i MAFFT_input_files/selected_sequences_wrapped.fasta -o MAFFT_input_files/ITSx_outputs/refs_ITSx --only_reg ITS1 -p /home/byersa/00_nesi_projects/lincoln03750/oomycete_AGRF/BLASTN/ITSx_1.1.3/ITSx_db/HMMs #reference sequences
+ITSx -i MAFFT_input_files/OTUs_wrapped.fasta -o MAFFT_input_files/ITSx_outputs/queries_ITSx --only_reg ITS1 -p /home/byersa/00_nesi_projects/lincoln03750/oomycete_AGRF/BLASTN/ITSx_1.1.3/ITSx_db/HMMs #query sequences
+
+#Reformat headers
+awk '/^>/ {split($0,a,"|"); print a[1]"|"a[2]} !/^>/ {print}' MAFFT_input_files/ITSx_outputs/refs_ITSx.ITS1.fasta > MAFFT_input_files/ITSx_outputs/refs_ITSx.ITS1.trim.fasta
+awk '/^>/ {split($0,a,"|"); print a[1]} !/^>/ {print}' MAFFT_input_files/ITSx_outputs/queries_ITSx.ITS1.fasta > MAFFT_input_files/ITSx_outputs/queries_ITSx.ITS1.trim.fasta
+
+#Dereplicate reference sequences
+module load VSEARCH/2.21.1-GCC-11.3.0
+vsearch --derep_fulllength MAFFT_input_files/ITSx_outputs/refs_ITSx.ITS1.trim.fasta --output MAFFT_input_files/ITSx_outputs/refs_derep.ITS1.fasta --sizeout
+#Reformat headers
+awk '/^>/ {
+  split($0,a,"|");
+  sub(/;.*/,"",a[2]);
+  print a[1]"|"a[2]
+  next
+}
+{print}' MAFFT_input_files/ITSx_outputs/refs_derep.ITS1.fasta > MAFFT_input_files/ITSx_outputs/refs_derep.trim.ITS1.fasta 
+
+#Wrap sequences to 60 bp per line
+module load seqtk/1.4-GCC-11.3.0
+seqtk seq -l 60 MMAFFT_input_files/ITSx_outputs/refs_derep.trim.ITS1.fasta > MAFFT_input_files/ITSx_outputs/refs_derep.wrapped.ITS1.fasta
+seqtk seq -l 60 MAFFT_input_files/ITSx_outputs/queries_ITSx.ITS1.trim.fasta > MAFFT_input_files/ITSx_outputs/queries_ITSx.ITS1.wrapped.fasta
+
+#Combine OTUs and reference
+cat  MAFFT_input_files/ITSx_outputs/refs_derep.wrapped.ITS1.fasta  MAFFT_input_files/ITSx_outputs/queries_ITSx.ITS1.wrapped.fasta > MAFFT_input_files/ITSx_outputs/combined_ref_and_query_seqs_ITS1.fasta
+
+
+#Align the reference sequences with MAFFT
+module load MAFFT/7.505-gimkl-2022a-with-extensions
+mafft --localpair --thread -1 MAFFT_input_files/ITSx_outputs/combined_ref_and_query_seqs_ITS1.fasta > combined_ref_and_query_seqs.aln.fasta
+
+#Trim poorly aligned regions (optional but recommended)
+module load trimAl/1.4.1-GCC-11.3.0
+trimal -automated1 -in combined_ref_and_query_seqs.aln.fasta -out comb_ref_query_seqs.trim.aln.fasta
+
+#Build a reference tree
+iqtree2 -s comb_ref_query_seqs.trim.aln.fasta -m MFP -B 1000 -T AUTO
+
+#export and handle in R to view phylogenetic placements of OTUs
+

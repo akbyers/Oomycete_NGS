@@ -1,0 +1,272 @@
+---
+title: "oomycete_diversity"
+output: html_document
+date: "2025-09-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r load libraries}
+library("phyloseq"); packageVersion("phyloseq")
+library("ggplot2"); packageVersion("ggplot2")
+library(data.table)
+library(dplyr)
+```
+#load files
+```{r}
+otu_table <- read.table("C:/Users/byersa/OneDrive - Lincoln University/Documents/Rutherford/Oomycete sequencing/DADA2_outputs/otu_table_97_oomycetes.tsv", header=TRUE, row.names=1, sep="\t", check.names=FALSE)
+taxonomy_file <- read.csv("C:/Users/byersa/OneDrive - Lincoln University/Documents/Rutherford/Oomycete sequencing/DADA2_outputs/iqTree_placement_results.csv")
+rownames(taxonomy_file) <- taxonomy_file$OTU
+sample_metadata <- read.csv("C:/Users/byersa/OneDrive - Lincoln University/Documents/Rutherford/Oomycete sequencing/DADA2_outputs/sample_metadata.csv")
+rownames(sample_metadata) <- sample_metadata$SampleID
+```
+#make phyloseq object
+```{r}
+otu_ps <- otu_table(otu_table, taxa_are_rows=TRUE)
+tax_ps <- tax_table(as.matrix(taxonomy_file[,-1:-2]))
+samples_ps <- sample_data(sample_metadata)
+
+oomycetes_ps <- phyloseq(otu_ps, tax_ps, samples_ps) #843 taxa and 50 samples
+```
+```{r}
+#https://evomics.org/wp-content/uploads/2016/01/phyloseq-Lab-01-Answers.html#initial-exploration-of-data
+tdt = data.table(tax_table(oomycetes_ps),
+                 TotalCounts = taxa_sums(oomycetes_ps),
+                 OTU = taxa_names(oomycetes_ps))
+ggplot(tdt, aes(TotalCounts)) + 
+  geom_histogram() + 
+  ggtitle("Histogram of Total Counts")
+
+# How many singletons?
+tdt[(TotalCounts <= 0), .N] #zero singletons
+# How many doubletons?
+tdt[(TotalCounts <= 2), .N] #48 doubletons
+```
+#Repeated rarefaction with alpha and beta-diversity calculation
+```{r}
+devtools::install_github("Nick243/subsamplePhyloseq")
+library(subsamplePhyloseq)
+```
+```{r Repeatedly subsample phyloseq object 100 times}
+min(sample_sums(oomycetes_ps)) #30696
+oomycetes_ps_rareReps <- subsample_phyloseq(ps_object = oomycetes_ps, repeats = 100, depth = 30696, n_cores = 1)
+```
+```{r export dataframes}
+oomycetes_alpha_dat <- oomycetes_ps_rareReps$adiv #alpha diversity dataframe
+oomycetes_bray <- oomycetes_ps_rareReps$bray_curtis #bray-curtis dissimilarities
+```
+
+#Alpha diversity
+```{r}
+library(rcompanion)
+library(multcompView)
+library(reshape2)
+library(Rmisc)
+```
+```{r edit alpha diversity dataframe}
+sampleDat <- as.matrix(oomycetes_ps@sam_data)
+sampleDat <- as.data.frame(sampleDat)#export to dataframe
+oomycetes_alpha_dat <- cbind(sampleDat, oomycetes_alpha_dat) #bind dataframes
+oomycetes_alpha_dat$Forest <- as.factor(oomycetes_alpha_dat$Forest)
+```
+```{r melt and summarise alpha diversity DF}
+oomycetes_alpha_dat2 <- melt(oomycetes_alpha_dat)
+oomycetes_NR_alpha_Summary <- summarySE(oomycetes_alpha_dat2, measurevar = "value", groupvars=c("Forest", "variable"))
+oomycetes_NR_alpha_Summary$Forest <- as.factor(oomycetes_NR_alpha_Summary$Forest)
+```
+```{r}
+# Run Kruskal-Wallis for each genus
+kruskal_results <- lapply(oomycetes_alpha_dat[,4:8], function(x) {
+  kruskal.test(x ~ oomycetes_alpha_dat$Forest)})
+
+#Obtain results
+kruskal_summary <- data.frame(
+  Genus = names(kruskal_results),
+  statistic = sapply(kruskal_results, function(x) x$statistic),
+  p.value = sapply(kruskal_results, function(x) x$p.value))
+kruskal_summary
+```
+
+```{r pairwise testing}
+#Only observed and fisher will undergo pairwise testing
+Observed_wilcox <- pairwise.wilcox.test(oomycetes_alpha_dat$Observed, oomycetes_alpha_dat$Forest, p.adjust.method = "holm")
+Fisher_wilcox <- pairwise.wilcox.test(oomycetes_alpha_dat$Fisher, oomycetes_alpha_dat$Forest, p.adjust.method = "holm")
+
+#generate compact letter display
+Observed_wilcox.Matrix = fullPTable(Observed_wilcox$p.value) 
+multcompLetters(Observed_wilcox.Matrix)
+Fisher_wilcox.Matrix = fullPTable(Fisher_wilcox$p.value) 
+multcompLetters(Fisher_wilcox.Matrix)
+```
+#Plot differences in Observed richness and Shannon diversity across forests
+```{r}
+alpha_Shannon <- ggplot(oomycetes_alpha_dat, aes(y = Forest, x = Shannon, fill = Forest)) +
+  geom_boxplot(color = "black", outliers = FALSE) +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 3, color = "black", fill = "black") +
+  scale_fill_brewer(palette = "YlOrRd") +
+  labs(x = "Shannon diversity",
+    y = NULL,
+    caption = "KW Chi-sq=7.54, p=0.11") +
+  theme_bw(base_size = 15) +
+  theme(axis.text = element_text(colour = "black"),
+    axis.text.x = element_text(size = 8),
+    axis.text.y = element_text(size = 10),
+    axis.title.x = element_text(size = 12),
+    plot.caption = element_text(size = 12, face = "italic", hjust = 0))
+```
+```{r}
+alpha_Observed <- ggplot(oomycetes_alpha_dat, aes(y = Forest, x = Observed, fill = Forest)) +
+  geom_boxplot(color = "black", outliers = FALSE) +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 3, color = "black", fill = "black") +
+  scale_fill_brewer(palette = "YlOrRd") +
+  labs(x = "Observed richness",
+    y = NULL,
+    caption = "KW Chi-sq=14.69, p=0.005") +
+  theme_bw(base_size = 15) +
+  theme(axis.text = element_text(colour = "black"),
+    axis.text.x = element_text(size = 8),
+    axis.text.y = element_text(size = 10),
+    axis.title.x = element_text(size = 12),
+    plot.caption = element_text(size = 12, face = "italic", hjust = 0))+
+  annotate("text", x = 100, y=5, label= "ab", size=4)+ 
+  annotate("text", x = 100, y=4, label= "b", size=4)+
+  annotate("text", x = 100, y=3, label= "ab", size=4)+
+  annotate("text", x = 100, y=2, label= "a", size=4)+
+  annotate("text", x = 100, y=1, label= "a", size=4)
+```
+##Beta diversity analysis
+```{r}
+NMDS_oomycetes <- vegan::metaMDS(oomycetes_bray)
+NMDS.ordPlot = plot_ordination(oomycetes_ps, NMDS_oomycetes, color="Forest")+
+  geom_point(size = 3, alpha = 0.7) +
+  theme_bw(base_size = 15)
+NMDS.ordPlot
+```
+```{r PERMANOVA test}
+meta <- data.frame(sample_data(oomycetes_ps))
+permanova <- adonis2(oomycetes_bray ~ Forest, data = meta, permutations = 999)
+print(permanova)
+
+#pairwise adonis
+library(pairwiseAdonis)
+pw_permanova <- pairwise.adonis2(oomycetes_bray ~ Forest, data = meta, nperm = 999)
+```
+
+
+
+
+
+
+##3. Analyse abudnances of taxa at genus level
+```{r convert to relative abundance}
+genus_glom <- tax_glom(oomycetes_ps, taxrank = "Genus")
+genus_rel <- transform_sample_counts(genus_glom, function(x) x / sum(x))
+```
+```{r}
+oomycete_ps_RA_CAT.df <- psmelt(genus_rel) %>%
+  dplyr::group_by(Forest, Genus) %>%
+  dplyr::summarise(mean_abund = mean(Abundance)) %>%
+  dplyr::group_by(Forest) %>%
+  dplyr::mutate(rel_abund = mean_abund / sum(mean_abund))  # force sums to 1
+```
+```{r}
+Genus_Glom_plot <- ggplot(oomycete_ps_RA_CAT.df, 
+                          aes(fill = reorder(Genus, +rel_abund), 
+                              y = rel_abund, 
+                              x = Forest)) + 
+  geom_bar(position = "stack", stat = "identity") +
+  theme_bw(base_size = 15) + 
+  theme(axis.text.y = element_text(colour = "black", size = 12),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(size = 12),
+        legend.position = "right",
+        legend.text = element_text(size = 12),
+        legend.key.size = unit(0.6, "cm"),
+        legend.justification = "left",
+        legend.box.margin = margin(l = 1, unit = "cm"),
+        legend.title = element_text(size = 12)) +
+  xlab("") +
+  ylab("Relative abundance") +
+  # scale_fill_manual(values = mycolors) +
+  geom_col(color = "black") + 
+  guides(fill = guide_legend(title = "Genus", ncol = 2)) +   
+  scale_y_continuous(n.breaks = 10, limits = c(0, 1))
+
+Genus_Glom_plot2 <- Genus_Glom_plot + 
+  coord_flip() + 
+  scale_x_discrete(limits = rev)
+```
+
+
+##Differential abumdance analysis
+```{r}
+library(ANCOMBC)
+
+#Prepare dataframe
+#set reference level
+sample_data(oomycetes_ps)$Forest = factor(sample_data(oomycetes_ps)$Forest, levels = c("Hirakimata", "Glenfern", "Windy_Hill", "Gadgil", "Kaiaraara"))
+```
+```{r ancombc on gene category, warning=FALSE}
+set.seed(71)
+ancombc_OTU = ancombc2(data = oomycetes_ps,
+                  tax_level = "Genus",
+                  fix_formula = "Forest", 
+                  p_adj_method = "holm", 
+                  prv_cut = 0, lib_cut = 0, s0_perc = 0.05,
+                  pseudo = 0.1, pseudo_sens = FALSE,
+                  group = "Forest", struc_zero = FALSE, neg_lb = FALSE,
+                  alpha = 0.05, 
+                  global = TRUE, pairwise = TRUE,
+                  mdfdr_control = list(fwer_ctrl_method = "holm", B = 100))
+ancombc_resGlobal <- ancombc_OTU$res_global
+ancombc_resPair <- ancombc_OTU$res_pair
+```
+```{r}
+ancombc_OTU_abundances <- as.data.frame(ancombc_OTU$bias_correct_log_table)
+ancombc_OTU_abundances <- t(ancombc_OTU_abundances)
+
+Forest <- as.data.frame(sample_data(oomycetes_ps)$Forest)
+colnames(Forest) <- "Forest"
+ancombc_OTU_abundances <- cbind(Forest, ancombc_OTU_abundances)
+
+#melt dataframe
+ancombc_OTU_abundances.m <- reshape2::melt(ancombc_OTU_abundances)
+```
+```{r split by category}
+ancombc_OTU_abundances.sum <- ancombc_OTU_abundances.m %>%
+  dplyr::group_by(Forest, variable) %>%
+  dplyr::summarise(mean_abund= mean(value), SD= sd(value))
+```
+#Edit names
+```{r}
+levels(ancombc_OTU_abundances.sum$variable)[14] <- "Saprolegniaceae_Unidentified"
+levels(ancombc_OTU_abundances.sum$variable)[17] <- "Oomycota_Unidentified"
+```
+
+#C degradation
+```{r}
+OTU_plot <- ggplot(ancombc_OTU_abundances.sum, aes(x=mean_abund, y= variable, color=Forest)) +
+  geom_point(aes(colour=Forest),alpha=1, size=6) +
+  scale_colour_brewer(palette = "YlOrRd")+
+  theme_bw(base_size = 15)+
+  xlab("Relative abundance")+
+  theme(axis.text.x = element_text(colour="black"),
+  axis.text.y = element_text(colour="black"),
+  axis.title.x = element_text(colour="black"),
+  axis.title.y = element_text(colour="black"),
+  legend.position = "right")+
+  geom_errorbar(aes(xmin=mean_abund-SD, xmax=mean_abund+SD), size=1, width=.2)+
+  ylab("")+
+  labs(colour="Forest")+
+  scale_y_discrete(limits=rev)
+```
+
+

@@ -1,0 +1,121 @@
+---
+title: "Taxonomic identification"
+output: html_document
+date: "2025-09-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+##refine OTU taxonomy file to select best hit for each OTU
+#Primary metric: highest bitscore (preferred over percent identity because it accounts for length & mismatches)
+
+#Tie-breakers (in order): highest percent identity (pident), highest query coverage (qcovs) or longest alignment length (length), smallest evalue (if bitscore ties), prefer refseq / curated titles if you can identify them (manual or regex), If still tied, pick the hit with the longest subject length (slen) or arbitrarily the first
+```{r}
+library(tidyverse)
+#library(devtools)
+#install_github("ropensci/rentrez")
+library(rentrez)
+library(dplyr)
+```
+```{r}
+blast <- read.delim("C:/Users/byersa/OneDrive - Lincoln University/Documents/Rutherford/Oomycete sequencing/DADA2_outputs/blast_oomycetes_ITS1_with_header.tsv", stringsAsFactors = FALSE, quote = "", check.names = FALSE)
+blast <- blast[,-19] #remove duplicate column
+blast$qseqid <- as.factor(blast$qseqid)
+```
+```{r}
+# 1) keep hits with pident >= 80 and qcovs >= 60 (adjust to your amplicon length)
+filtered <- blast %>%
+  filter(pident >= 80, qcovs >= 80)
+filtered$qseqid <- as.factor(filtered$qseqid)
+```
+```{r}
+# 2) for each qseqid, select top N by bitscore, then add one representative per distinct genus seen
+topN <- 30
+selected <- filtered %>%
+  group_by(qseqid) %>%
+  arrange(desc(bitscore), desc(pident)) %>%
+  slice_head(n = topN) %>%
+  ungroup()
+selected$qseqid <- as.factor(selected$qseqid)
+levels(selected$qseqid)
+
+# Optional: reduce redundancy by taxon — if you have sscinames or taxid column, use that.
+# Write selected sseqids (accessions) for fetching
+selected %>% distinct(sseqid) %>% write_tsv("selected_accessions.txt", col_names = FALSE)
+
+# Assume 'selected' is your filtered BLAST table
+selected <- selected %>%
+  mutate(
+    acc = str_extract(sseqid, "[A-Z0-9]+\\.[0-9]+")  # grabs accession.version
+  )
+# Remove any NA rows (failed to extract)
+selected <- selected %>% filter(!is.na(acc))
+
+# Unique accessions for fetching
+accs <- unique(selected$acc)
+```
+```{r}
+# ---- 5. Fetch sequences in batches using rentrez ----
+batch_size <- 100
+batches <- split(accs, ceiling(seq_along(accs) / batch_size))
+
+seqs <- lapply(batches, function(ids) {
+  entrez_fetch(db = "nuccore", id = ids, rettype = "fasta")
+})
+
+# Collapse all batches into one FASTA
+all_fasta <- paste(seqs, collapse = "\n")
+
+# ---- 6. Write output files ----
+writeLines(all_fasta, "selected_sequences.fasta")        # FASTA of references
+write_tsv(selected, "filtered_hits.tsv")                 # Table with metadata
+write_tsv(as_tibble(accs), "selected_accessions.txt")    # Raw list of IDs
+```
+##Perform query and reference alignment in Linux environment using identification_analysis.txt script
+##Sequences were aligned using MAFFT and tree built using IQ-TREE2
+```{r}
+library(ape)
+tree_td <- read.tree("C:/Users/byersa/OneDrive - Lincoln University/Documents/Rutherford/Oomycete sequencing/MAFFT_IQTREE2/comb_ref_query_seqs.trim.aln.fasta.treefile")
+```
+```{r Separate query OTUs from references}
+query_tips <- grep("OTU_", tree$tip.label, value = TRUE)
+ref_tips   <- setdiff(tree$tip.label, query_tips)
+```
+```{r Find the closest reference for each OTU}
+install.packages("phytools")
+library(phytools)
+```
+```{r}
+# Compute distance matrix between all tips
+dist_matrix <- cophenetic(tree)
+
+# Extract only query vs reference distances
+dist_sub <- dist_matrix[query_tips, ref_tips]
+
+# Find the closest reference for each query OTU
+closest_ref <- apply(dist_sub, 1, function(x) ref_tips[which.min(x)])
+closest_ref
+```
+```{r Extract genus from reference labels}
+genus <- sapply(strsplit(closest_ref, "\\|"), `[`, 2)
+genus
+```
+```{r}
+results <- data.frame(
+  OTU = query_tips,
+  Closest_Ref = closest_ref,
+  Genus = genus
+)
+head(results)
+write.csv(results, "iqTree_placement_results.csv")
+```
+
+
