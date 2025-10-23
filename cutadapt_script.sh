@@ -1,6 +1,6 @@
 #!/bin/bash -e
 
-#SBATCH --account       lincoln03750
+#SBATCH --account       [project number]
 #SBATCH --job-name      cutadapt
 #SBATCH --time          1-00:00:00
 #SBATCH --mem           10GB
@@ -9,7 +9,7 @@
 #SBATCH --output        %x_%A_%a.out
 
 # Working directory
-cd /home/byersa/00_nesi_projects/lincoln03750/oomycete_AGRF/AGRF_NXGSQCAGRF25070329-1_M743W
+cd [set working directory]
 #mkdir trimmed_reads
 
 module purge
