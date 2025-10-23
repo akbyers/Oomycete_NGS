@@ -1,6 +1,6 @@
 #!/bin/bash -e
 
-#SBATCH --account       lincoln03750
+#SBATCH --account       [project number]
 #SBATCH --job-name      blastn
 #SBATCH --time          2-00:00:00
 #SBATCH --mem           50GB
@@ -9,7 +9,7 @@
 #SBATCH --output        %x_%A_%a.out
 
 # Working directory
-cd /home/byersa/00_nesi_projects/lincoln03750/oomycete_AGRF/
+cd /home/byersa/00_nesi_projects/[project number]/oomycete_AGRF/
 #mkdir BLASTN
 
 module purge
