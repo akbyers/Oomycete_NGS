@@ -1,6 +1,6 @@
 #!/bin/bash -e
 
-#SBATCH --account       lincoln03750
+#SBATCH --account       [project number]
 #SBATCH --job-name      oomycete_ID
 #SBATCH --time          1-00:00:00
 #SBATCH --mem           5GB
@@ -9,7 +9,7 @@
 #SBATCH --output        %x_%A_%a.out
 
 #set working directory
-cd /home/byersa/00_nesi_projects/lincoln03750/oomycete_AGRF/BLASTN
+cd [working directory]
 
 #Reformat headers 
 awk '
